@@ -1,0 +1,209 @@
+<html>
+    <head>
+        <title>Croquet Authentication</title>
+        <link rel="shortcut icon" href="icon.png" type="image/x-icon" />
+
+        <script src="script/croquet.js"></script>
+        <script src="node_modules/tweetnacl/nacl-fast.min.js"></script>
+    </head>
+
+    <style>
+        html, body {
+            margin: auto;
+            padding: 0;
+        }
+
+        #chat {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+        }
+
+        #messages {
+            flex: 1;
+            margin-left: 20px;
+            margin-top: 10px
+        }
+        .message {
+            font-size: 36px;
+        }
+        .messageName {
+            font-weight: bold;
+        }
+        .messageText {
+
+        }
+
+        #input {
+            flex-basis: 30px;
+            padding: 10px;
+
+            border-top: solid;
+            background-color: beige;
+
+            display: flex;
+            flex-direction: row;
+            justify-content: space-evenly;
+        }
+
+        #message {
+
+        }
+        #name {
+
+        }
+    </style>
+
+    <body>
+        <div id="chat">
+            <div id="messages">
+                
+            </div>
+            
+            <div id="input">
+                <div id="message">
+                    <input id="postMessageInput" size="40" type="text">
+                    <button id="postMessageButton">Post</button>
+                </div>
+                
+                <div id="name">
+                    <input id="changeNameInput" size="10" type="text">
+                    <button id="changeNameButton">Name</button>
+                </div>
+
+                <button id="copyKeyButton">📋</button>
+
+                <button id="setKeyButton">🔑</button>
+            </div>
+        </div>
+
+        <textarea id="secretKeyTextArea"></textarea>
+    </body>
+
+    <script>
+        textEncoder = new TextEncoder();
+        textDecoder = new TextDecoder();
+    </script>
+
+    <script>
+        class Model extends Croquet.Model {
+            init() {
+                this.chat = [];
+                this.names = {};
+                
+                this.unique = 'Croquet';
+
+                this.subscribe(this.sessionId, "post-message", this.message);
+                this.subscribe(this.sessionId, "update-name", this.name);
+            }
+
+            _verify(scope, event, {publicKey, data, signature}) {
+                const verified = nacl.sign.detached.verify(textEncoder.encode(JSON.stringify([scope, event, data])), signature, publicKey);
+                return verified;
+            }
+
+            message({publicKey, data, signature}) {
+                const verified = this._verify(this.sessionId, "post-message", {publicKey, data, signature});
+                if(verified) {
+                    this.chat.push({
+                        publicKey,
+                        message : data.message,
+                    });
+
+                    this.publish(this.sessionId, "posted-message", {publicKey, message : data.message});
+                }
+            }
+
+            name({publicKey, data, signature}) {
+                const verified = this._verify(this.sessionId, "update-name", {publicKey, data, signature});
+                if(verified) {
+                    this.names[JSON.stringify(publicKey)] = data.name;
+                    this.publish(this.sessionId, "updated-name", {publicKey, name : data.name});
+                }
+            }
+        }
+
+        Model.register();
+    </script>
+
+    <script>
+        class View extends Croquet.View {
+            constructor(model) {
+                super(model);
+
+                this.model = model;
+                window.view = this;
+
+                postMessageButton.addEventListener("click", event => {
+                    const message = postMessageInput.value;
+                    if(message.length > 0)
+                        this._publish(this.sessionId, "post-message", {message});
+                });
+                this.subscribe(this.sessionId, "posted-message", this.message);
+                
+                changeNameButton.addEventListener("click", event => {
+                    const name = changeNameInput.value;
+                    if(name.length > 0)
+                        this._publish(this.sessionId, "update-name", {name});
+                });
+                this.subscribe(this.sessionId, "updated-name", this.name);
+
+                if(localStorage.getItem("secretKey") !== null) {
+                    const secretKey = new Uint8Array(JSON.parse(localStorage.getItem("secretKey")));
+                    this.keyPair = nacl.sign.keyPair.fromSecretKey(secretKey);
+                }
+                else {
+                    this.keyPair = nacl.sign.keyPair();
+                    localStorage.setItem("secretKey", JSON.stringify(Array.from(this.keyPair.secretKey)));
+                }
+
+                secretKeyTextArea.value = localStorage.getItem("secretKey");
+                copyKeyButton.addEventListener("click", event => {
+                    secretKeyTextArea.select();
+                    document.execCommand("copy");
+                });
+
+                setKeyButton.addEventListener("click", event => {
+                    const secretKeyString = window.prompt("Paste in your Secret Key");
+                    const secretKey = new Uint8Array(JSON.parse(secretKeyString));
+                    this.keyPair = nacl.sign.keyPair.fromSecretKey(secretKey);
+                    localStorage.setItem("secretKey", JSON.stringify(Array.from(this.keyPair.secretKey)));
+                });
+            }
+
+            _publish(scope, event, data) {
+                const publicKey = this.keyPair.publicKey;
+                const signature = nacl.sign.detached(textEncoder.encode(JSON.stringify([scope, event, data])), this.keyPair.secretKey);
+                this.publish(scope, event, {publicKey, data, signature});
+            }
+
+            message({publicKey, message}) {
+                if(nacl.verify(this.keyPair.publicKey, publicKey)) {
+                    postMessageInput.value = '';
+                }
+
+                const name = this.model.names[JSON.stringify(publicKey)] || publicKey;
+                messages.innerHTML += `
+                    <div class="message" data-public-key="${publicKey}">
+                        <span class="messageName">${name}</span>: <span class="messageText">${message}</span>
+                    </div>
+                `;
+            }
+
+            name({publicKey, name}) {
+                if(nacl.verify(this.keyPair.publicKey, publicKey)) {
+                    changeNameInput.value = '';
+                }
+
+                messages.querySelectorAll(`[data-public-key="${publicKey}"] > .messageName`).forEach(messageName => {
+                    messageName.innerText = name;
+                });
+            }
+        }
+    </script>
+
+    <script>
+        Croquet.startSession("Croquet-Authenthication", Model, View);
+    </script>
+</html>
